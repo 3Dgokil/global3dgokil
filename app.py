@@ -1,5 +1,6 @@
 import os
 import json
+import time
 import random
 import requests
 import streamlit as st
@@ -28,26 +29,44 @@ def api_key():
     return os.getenv("GEMINI_API_KEY", "")
 
 def call_gemini(key, model, prompt):
-    r = requests.post(
-        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-        headers={"x-goog-api-key": key, "Content-Type": "application/json"},
-        json={
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "temperature": 1.0,
-                "responseMimeType": "application/json"
-            }
-        },
-        timeout=90
-    )
-    if not r.ok:
-        try:
-            msg = r.json().get("error", {}).get("message", r.text)
-        except Exception:
-            msg = r.text
-        raise RuntimeError(f"Gemini API {r.status_code}: {msg}")
-    txt = r.json()["candidates"][0]["content"]["parts"][0]["text"]
-    return json.loads(txt)
+    # Urutan model fallback otomatis jika server sedang sibuk (503/429)
+    candidate_models = [model, "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+    fallback_models = list(dict.fromkeys(candidate_models))
+    
+    last_error = ""
+    for target_model in fallback_models:
+        for attempt in range(2):
+            try:
+                r = requests.post(
+                    f"https://generativelanguage.googleapis.com/v1beta/models/{target_model}:generateContent",
+                    headers={"x-goog-api-key": key, "Content-Type": "application/json"},
+                    json={
+                        "contents": [{"parts": [{"text": prompt}]}],
+                        "generationConfig": {
+                            "temperature": 1.0,
+                            "responseMimeType": "application/json"
+                        }
+                    },
+                    timeout=90
+                )
+                
+                if r.ok:
+                    txt = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+                    return json.loads(txt)
+                
+                # Tangani server kelebihan beban (503) atau batas kuota sesaat (429)
+                if r.status_code in [503, 429]:
+                    time.sleep(2)
+                    continue
+                else:
+                    msg = r.json().get("error", {}).get("message", r.text)
+                    last_error = f"{r.status_code}: {msg}"
+                    break
+            except Exception as e:
+                last_error = str(e)
+                time.sleep(1)
+                
+    raise RuntimeError(f"Server Gemini sedang sibuk. Detail: {last_error}")
 
 def prompts(x, duration, language):
     dialogue_text = "\n".join(
@@ -55,7 +74,6 @@ def prompts(x, duration, language):
         for d in x.get("dialogue", [])
     )
     
-    # Otomatis menyuntikkan instruksi Seamless Infinity Loop ke prompt generator video
     x["flow_prompt"] = f"""Create a {duration} vertical 9:16 high-end 3D cinematic animation (Pixar/Illumination style), suitable for all ages.
 VISUAL TONE: Vibrant studio lighting, expressive facial physics, warm cinematic colors, energetic pacing, sharp 4K render quality.
 
@@ -126,7 +144,7 @@ with st.sidebar:
     key = api_key()
     st.write("Gemini API:", "✅ Terhubung" if key else "⚠️ Belum diatur")
     model = st.text_input("Model Gemini", "gemini-2.5-flash")
-    st.caption("Rekomendasi: `gemini-2.5-flash` untuk respon cepat.")
+    st.caption("Rekomendasi: `gemini-2.5-flash` atau `gemini-2.0-flash`.")
     
     language_choice = st.selectbox("🌎 Bahasa cerita & dialog", LANGUAGES, index=0)
     if language_choice == "Bahasa lain (isi sendiri)":
@@ -148,7 +166,7 @@ with st.sidebar:
 if "idea" not in st.session_state:
     st.session_state.idea = None
 
-# Action
+# Tombol Eksekusi
 if st.button("🔥 GENERATE IDE BARU", type="primary", use_container_width=True):
     prompt = f"""You are an elite YouTube Shorts animation director specializing in viral 3D animated shorts (family-friendly, all ages, Pixar/Illumination aesthetic).
 
@@ -196,7 +214,7 @@ Return ONLY a valid JSON object with these keys:
             st.info("Menggunakan ide cadangan lokal...")
             st.session_state.idea = prompts(local_idea(target_language), duration, target_language)
 
-# Render
+# Tampilan Hasil
 x = st.session_state.idea
 if x:
     st.divider()
