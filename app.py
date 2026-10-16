@@ -29,8 +29,8 @@ def api_key():
     return os.getenv("GEMINI_API_KEY", "")
 
 def call_gemini(key, model, prompt):
-    # Urutan model fallback otomatis jika server sedang sibuk (503/429)
-    candidate_models = [model, "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+    # Model resmi aktif untuk endpoint v1beta
+    candidate_models = [model, "gemini-2.5-flash", "gemini-2.0-flash"]
     fallback_models = list(dict.fromkeys(candidate_models))
     
     last_error = ""
@@ -58,6 +58,9 @@ def call_gemini(key, model, prompt):
                 if r.status_code in [503, 429]:
                     time.sleep(2)
                     continue
+                elif r.status_code == 404:
+                    # Model tidak tersedia di v1beta, langsung beralih ke model berikutnya
+                    break
                 else:
                     msg = r.json().get("error", {}).get("message", r.text)
                     last_error = f"{r.status_code}: {msg}"
@@ -66,7 +69,7 @@ def call_gemini(key, model, prompt):
                 last_error = str(e)
                 time.sleep(1)
                 
-    raise RuntimeError(f"Server Gemini sedang sibuk. Detail: {last_error}")
+    raise RuntimeError(f"Gagal memanggil model Gemini ({last_error})")
 
 def prompts(x, duration, language):
     dialogue_text = "\n".join(
@@ -144,7 +147,7 @@ with st.sidebar:
     key = api_key()
     st.write("Gemini API:", "✅ Terhubung" if key else "⚠️ Belum diatur")
     model = st.text_input("Model Gemini", "gemini-2.5-flash")
-    st.caption("Rekomendasi: `gemini-2.5-flash` atau `gemini-2.0-flash`.")
+    st.caption("Model default: `gemini-2.5-flash`")
     
     language_choice = st.selectbox("🌎 Bahasa cerita & dialog", LANGUAGES, index=0)
     if language_choice == "Bahasa lain (isi sendiri)":
